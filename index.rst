@@ -12,3 +12,4 @@ Contents:
    :maxdepth: 2
 
    chapter_one/index
+   chapter_two/index
