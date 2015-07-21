@@ -13,3 +13,4 @@ Contents:
 
    chapter_one/index
    chapter_two/index
+   chapter_three/index
