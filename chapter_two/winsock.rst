@@ -396,14 +396,14 @@ WSAEventSelect()
    * 程序等待事件对象（WSAEventSelect() 返回表明数据准备好，事件对象变为有信号，程序结束等待）
    * 程序执行 recv() 失败，返回错误 WSAWOULDBLOCK
 
-   将发生的网络事件记录（通过网络事件比特位设置）并向对应对象发信号之后，不再有其他动作。
+   Ws2_32.dll 将发生的网络事件记录（通过网络事件比特位设置）并向对应对象发信号之后，不再有其他动作。
    也就是说事件记录会一直保留，且对应的对象收到信号后也会持续不变。
    一直持续到程序调用某函数重新触发了新的网络事件并重新向事件对象发信号为止。
-   这种函数称为重新触发函数
-   以下列举了不同网络事件的触发函数：
+   这种函数称为重置函数
+   以下列举了不同网络事件的重置函数：
 
    +-----------------------------+-------------------------------------------------+----------+
-   | 网络事件                    | 重新触发函数                                    | 触发方式 |
+   | 网络事件                    | 重置函数                                        | 触发方式 |
    +=============================+=================================================+==========+
    | FD_READ                     | recv, recvfrom, WSARecv, WSARecvEx, WSARevcFrom | 条件触发 |
    +-----------------------------+-------------------------------------------------+----------+
@@ -426,10 +426,143 @@ WSAEventSelect()
    | FD_ADDRESS_LIST_CHANGE      | WSAIoctl(SIO_ADDRESS_LIST_CHANGE)               | 边沿触发 |
    +-----------------------------+-------------------------------------------------+----------+
 
+   .. note:: 程序收到 FD_CLOSE 事件时，应该检验数据的完整性，以避免数据的丢失。
+
 5. 后续操作
    
    在设定事件对象之后，将事件对象传给 WSAEnumNetworkEvents() 枚举所有发生的网络事件。
    需要注意的是，这个过程会重置事件对象状态和事件记录，该过程是原子的。
+
+6. 条件触发
+   
+   当套接字 s 收到数据块时，会引起 Ws2_32.dll 记录事件 FD_READ 并向对应事件对象发送信号。
+   而程序调用 recv() 函数之后，如果还有数据，即网络条件还有效，则会再次触发 FD_READ 事件。
+
+7. 时效性
+   
+   调用 WSAEventSelect() 或者重置函数时，网络事件已经发生，则网络事件依然会被记录，且会发信号给相关事件对象。
+   也就是说网络事件不是瞬时的，而是有一定的实效性的。
+
+8. 不叠加
+   
+   WSAEventSelect() 调用没有叠加性，后一次调用会覆盖前一次
+
+9. 清理
+    
+   WSACloseEvent()
+10. 代码示例
+    
+    摘自 MSDN:
+
+    .. code-block:: C++
+    
+        #ifndef UNICODE
+        #define UNICODE
+        #endif
+
+        #define WIN32_LEAN_AND_MEAN
+
+        #include <windows.h>
+
+        #include <winsock2.h>
+        #include <Ws2tcpip.h>
+        #include <stdio.h>
+
+        // Link with ws2_32.lib
+        #pragma comment(lib, "Ws2_32.lib")
+
+        int main()
+        {
+        //-------------------------
+        // Declare and initialize variables
+            WSADATA wsaData;
+            int iResult;
+
+            SOCKET SocketArray[WSA_MAXIMUM_WAIT_EVENTS], ListenSocket;
+            WSAEVENT EventArray[WSA_MAXIMUM_WAIT_EVENTS];
+            WSANETWORKEVENTS NetworkEvents;
+            sockaddr_in InetAddr;
+            DWORD EventTotal = 0;
+            DWORD Index;
+            DWORD i;
+            
+            HANDLE NewEvent = NULL; 
+
+            // Initialize Winsock
+            iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+            if (iResult != 0) {
+                wprintf(L"WSAStartup failed with error: %d\n", iResult);
+                return 1;
+            }
+
+        //-------------------------
+        // Create a listening socket
+            ListenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (ListenSocket == INVALID_SOCKET) {
+                wprintf(L"socket function failed with error: %d\n", WSAGetLastError() );
+                return 1;
+            }
+            
+            InetAddr.sin_family = AF_INET;
+            InetAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+            InetAddr.sin_port = htons(27015);
+
+        //-------------------------
+        // Bind the listening socket
+            iResult = bind(ListenSocket, (SOCKADDR *) & InetAddr, sizeof (InetAddr));
+            if (iResult != 0) {
+                wprintf(L"bind failed with error: %d\n", WSAGetLastError() );
+                return 1;
+            }
+
+        //-------------------------
+        // Create a new event
+            NewEvent = WSACreateEvent();
+            if (NewEvent == NULL) {
+                wprintf(L"WSACreateEvent failed with error: %d\n", GetLastError() );
+                return 1;
+            }    
+
+        //-------------------------
+        // Associate event types FD_ACCEPT and FD_CLOSE
+        // with the listening socket and NewEvent
+            iResult = WSAEventSelect(ListenSocket, NewEvent, FD_ACCEPT | FD_CLOSE);
+            if (iResult != 0) {
+                wprintf(L"WSAEventSelect failed with error: %d\n", WSAGetLastError() );
+                return 1;
+            }
+
+        //-------------------------
+        // Start listening on the socket
+            iResult = listen(ListenSocket, 10);
+            if (iResult != 0) {
+                wprintf(L"listen failed with error: %d\n", WSAGetLastError() );
+                return 1;
+            }
+
+        //-------------------------
+        // Add the socket and event to the arrays, increment number of events
+            SocketArray[EventTotal] = ListenSocket;
+            EventArray[EventTotal] = NewEvent;
+            EventTotal++;
+
+        //-------------------------
+        // Wait for network events on all sockets
+            Index = WSAWaitForMultipleEvents(EventTotal, EventArray, FALSE, WSA_INFINITE, FALSE);
+            Index = Index - WSA_WAIT_EVENT_0;
+
+        //-------------------------
+        // Iterate through all events and enumerate
+        // if the wait does not fail.
+            for (i = Index; i < EventTotal; i++) {
+                Index = WSAWaitForMultipleEvents(1, &EventArray[i], TRUE, 1000, FALSE);
+                if ((Index != WSA_WAIT_FAILED) && (Index != WSA_WAIT_TIMEOUT)) {
+                    WSAEnumNetworkEvents(SocketArray[i], EventArray[i], &NetworkEvents);
+                }
+            }
+
+        //...
+            return 0;
 
 .. [1] FD_WRITE 的触发方式不太相同.
  首次调用 connect 系列函数，会触发 FD_WRITE 事件（客户端）;
