@@ -48,7 +48,7 @@
            std::wcout << L"File " << path << L"not exist" << endl;
        }
 
-    判断文件夹是否存在：
+   判断文件夹是否存在：
     
     .. code-block:: C++
         :linenos:
